@@ -1,0 +1,12 @@
+{
+	"name": "leaflet-dist-dev",
+	"version": "0.8.0-dev",
+	"main": ["leaflet.js", "leaflet.css"],
+	"description": "Leaflet Dev Bower package",
+	"homepage": "https://github.com/nikgavalas/leaflet-dist-dev",
+	"ignore": [
+		".DS_Store",
+		".git",
+		".gitignore"
+	]
+}
