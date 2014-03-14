@@ -1,5 +1,5 @@
 /*
- Leaflet 0.8-dev (34b6b91), a JS library for interactive maps. http://leafletjs.com
+ Leaflet 0.8-dev ("d993d9d"), a JS library for interactive maps. http://leafletjs.com
  (c) 2010-2014 Vladimir Agafonkin, (c) 2010-2011 CloudMade
 */
 (function (window, document, undefined) {
@@ -445,11 +445,13 @@ L.Evented = L.Class.extend({
 		} else {
 			listeners = events[type];
 
-			for (i = 0, len = listeners.length; i < len; i++) {
-				if (listeners[i].fn === fn) {
-					listener = listeners[i];
-					listeners.splice(i, 1);
-					break;
+			if (listeners) {
+				for (i = 0, len = listeners.length; i < len; i++) {
+					if (listeners[i].fn === fn) {
+						listener = listeners[i];
+						listeners.splice(i, 1);
+						break;
+					}
 				}
 			}
 		}
@@ -1142,6 +1144,10 @@ L.LatLng.prototype = {
 
 	distanceTo: function (other) {
 		return L.CRS.Earth.distance(this, L.latLng(other));
+	},
+
+	wrap: function () {
+		return L.CRS.Earth.wrapLatLng(this);
 	}
 };
 
@@ -1188,32 +1194,37 @@ L.LatLngBounds = function (southWest, northEast) { // (LatLng, LatLng) or (LatLn
 };
 
 L.LatLngBounds.prototype = {
+
 	// extend the bounds to contain the given point or bounds
 	extend: function (obj) { // (LatLng) or (LatLngBounds)
-		if (!obj) { return this; }
-
-		var latLng = L.latLng(obj);
-		if (latLng !== null) {
-			obj = latLng;
-		} else {
-			obj = L.latLngBounds(obj);
-		}
+		var sw = this._southWest,
+			ne = this._northEast,
+			sw2, ne2;
 
 		if (obj instanceof L.LatLng) {
-			if (!this._southWest && !this._northEast) {
-				this._southWest = new L.LatLng(obj.lat, obj.lng);
-				this._northEast = new L.LatLng(obj.lat, obj.lng);
-			} else {
-				this._southWest.lat = Math.min(obj.lat, this._southWest.lat);
-				this._southWest.lng = Math.min(obj.lng, this._southWest.lng);
+			sw2 = obj;
+			ne2 = obj;
 
-				this._northEast.lat = Math.max(obj.lat, this._northEast.lat);
-				this._northEast.lng = Math.max(obj.lng, this._northEast.lng);
-			}
 		} else if (obj instanceof L.LatLngBounds) {
-			this.extend(obj._southWest);
-			this.extend(obj._northEast);
+			sw2 = obj._southWest;
+			ne2 = obj._northEast;
+
+			if (!sw2 || !ne2) { return this; }
+
+		} else {
+			return obj ? this.extend(L.latLng(obj) || L.latLngBounds(obj)) : this;
 		}
+
+		if (!sw && !ne) {
+			this._southWest = new L.LatLng(sw2.lat, sw2.lng);
+			this._northEast = new L.LatLng(ne2.lat, ne2.lng);
+		} else {
+			sw.lat = Math.min(sw2.lat, sw.lat);
+			sw.lng = Math.min(sw2.lng, sw.lng);
+			ne.lat = Math.max(ne2.lat, ne.lat);
+			ne.lng = Math.max(ne2.lng, ne.lng);
+		}
+
 		return this;
 	},
 
@@ -1615,14 +1626,15 @@ L.Map = L.Evented.extend({
 		var paddingTL = L.point(options.paddingTopLeft || options.padding || [0, 0]),
 		    paddingBR = L.point(options.paddingBottomRight || options.padding || [0, 0]),
 
-		    zoom = this.getBoundsZoom(bounds, false, paddingTL.add(paddingBR)),
-		    paddingOffset = paddingBR.subtract(paddingTL).divideBy(2),
+		    zoom = this.getBoundsZoom(bounds, false, paddingTL.add(paddingBR));
+
+		zoom = options.maxZoom ? Math.min(options.maxZoom, zoom) : zoom;
+
+		var paddingOffset = paddingBR.subtract(paddingTL).divideBy(2),
 
 		    swPoint = this.project(bounds.getSouthWest(), zoom),
 		    nePoint = this.project(bounds.getNorthEast(), zoom),
 		    center = this.unproject(swPoint.add(nePoint).divideBy(2).add(paddingOffset), zoom);
-
-		zoom = options && options.maxZoom ? Math.min(options.maxZoom, zoom) : zoom;
 
 		return this.setView(center, zoom, options);
 	},
@@ -1746,7 +1758,7 @@ L.Map = L.Evented.extend({
 		}
 
 		this._clearHandlers();
-		
+
 		if (this._loaded) {
 			this.fire('unload');
 		}
@@ -2022,11 +2034,11 @@ L.Map = L.Evented.extend({
 		var loading = !this._loaded;
 		this._loaded = true;
 
+		this.fire('viewreset', {hard: !preserveMapOffset});
+
 		if (loading) {
 			this.fire('load');
 		}
-
-		this.fire('viewreset', {hard: !preserveMapOffset});
 
 		this.fire('move');
 
@@ -2088,13 +2100,15 @@ L.Map = L.Evented.extend({
 	_fireMouseEvent: function (obj, e, type, propagate, latlng) {
 		type = type || e.type;
 
+		if (L.DomEvent._skipped(e)) { return; }
+
 		if (type === 'click') {
 			if (!e._simulated && ((this.dragging && this.dragging.moved()) ||
 			                      (this.boxZoom && this.boxZoom.moved()))) { return; }
 			obj.fire('preclick');
 		}
 
-		if (!obj.listens(type, propagate) || L.DomEvent._skipped(e)) { return; }
+		if (!obj.listens(type, propagate)) { return; }
 
 		if (type === 'contextmenu') {
 			L.DomEvent.preventDefault(e);
@@ -2122,7 +2136,7 @@ L.Map = L.Evented.extend({
 
 	whenReady: function (callback, context) {
 		if (this._loaded) {
-			callback.call(context || this, this);
+			callback.call(context || this, {target: this});
 		} else {
 			this.on('load', callback, context);
 		}
@@ -2227,30 +2241,33 @@ L.Layer = L.Evented.extend({
 	},
 
 	addTo: function (map) {
-		var id = L.stamp(this);
-		if (map._layers[id]) { return this; }
-		map._layers[id] = this;
-
-		this._zoomAnimated = map._zoomAnimated;
-
-		if (this.beforeAdd) {
-			this.beforeAdd(map);
-		}
-
-		this._mapToAdd = map;
-		map.whenReady(this._layerAdd, this);
-
+		map.addLayer(this);
 		return this;
 	},
 
-	_layerAdd: function () {
-		var map = this._mapToAdd;
+	remove: function () {
+		return this.removeFrom(this._map || this._mapToAdd);
+	},
+
+	removeFrom: function (obj) {
+		if (obj) {
+			obj.removeLayer(this);
+		}
+		return this;
+	},
+
+	getPane: function (name) {
+		return this._map.getPane(name ? (this.options[name] || name) : this.options.pane);
+	},
+
+	_layerAdd: function (e) {
+		var map = e.target;
 
 		// check in case layer gets added and then removed before the map is ready
-		if (!map) { return; }
+		if (!map.hasLayer(this)) { return; }
 
 		this._map = map;
-		this._mapToAdd = null;
+		this._zoomAnimated = map._zoomAnimated;
 
 		this.onAdd(map);
 
@@ -2264,53 +2281,53 @@ L.Layer = L.Evented.extend({
 
 		this.fire('add');
 		map.fire('layeradd', {layer: this});
-	},
-
-	remove: function () {
-
-		var id = L.stamp(this),
-		    map = this._map || this._mapToAdd;
-
-		if (!map || !map._layers[id]) { return this; }
-
-		if (map._loaded) {
-			this.onRemove(map);
-		}
-
-		if (this.getAttribution && map.attributionControl) {
-			map.attributionControl.removeAttribution(this.getAttribution());
-		}
-
-		if (this.getEvents) {
-			map.off(this.getEvents(), this);
-		}
-
-		delete map._layers[id];
-
-		if (map._loaded) {
-			map.fire('layerremove', {layer: this});
-			this.fire('remove');
-		}
-
-		this._map = this._mapToAdd = null;
-
-		return this;
-	},
-
-	getPane: function (name) {
-		return this._map.getPane(name ? (this.options[name] || name) : this.options.pane);
 	}
 });
 
 
 L.Map.include({
 	addLayer: function (layer) {
-		layer.addTo(this);
+		var id = L.stamp(layer);
+		if (this._layers[id]) { return layer; }
+		this._layers[id] = layer;
+
+		layer._mapToAdd = this;
+
+		if (layer.beforeAdd) {
+			layer.beforeAdd(this);
+		}
+
+		this.whenReady(layer._layerAdd, layer);
+
 		return this;
 	},
 
 	removeLayer: function (layer) {
-		layer.remove();
+		var id = L.stamp(layer);
+
+		if (!this._layers[id]) { return this; }
+
+		if (this._loaded) {
+			layer.onRemove(this);
+		}
+
+		if (layer.getAttribution && this.attributionControl) {
+			this.attributionControl.removeAttribution(layer.getAttribution());
+		}
+
+		if (layer.getEvents) {
+			this.off(layer.getEvents(), layer);
+		}
+
+		delete this._layers[id];
+
+		if (this._loaded) {
+			this.fire('layerremove', {layer: layer});
+			layer.fire('remove');
+		}
+
+		layer._map = layer._mapToAdd = null;
+
 		return this;
 	},
 
@@ -2904,7 +2921,7 @@ L.GridLayer = L.Layer.extend({
 
 	_startZoomAnim: function () {
 		this._prepareBgBuffer();
-		this._prevTranslate = this._translate;
+		this._prevTranslate = this._translate || new L.Point(0, 0);
 		this._prevScale = this._scale;
 	},
 
@@ -3027,6 +3044,12 @@ L.TileLayer = L.GridLayer.extend({
 
 		tile.onload = L.bind(this._tileOnLoad, this, done, tile);
 		tile.onerror = L.bind(this._tileOnError, this, done, tile);
+
+		/*
+		 Alt tag is set to empty string to keep screen readers from reading URL and for compliance reasons
+		 http://www.w3.org/TR/WCAG20-TECHS/H67
+		*/
+		tile.alt = '';
 
 		tile.src = this.getTileUrl(coords);
 
@@ -4462,8 +4485,11 @@ L.Renderer = L.Layer.extend({
 L.Map.include({
 	// used by each vector layer to decide which renderer to use
 	getRenderer: function (layer) {
-		var renderer = layer.options.renderer || this.options.renderer ||
-				(L.SVG && L.SVG.instance) || (L.Canvas && L.Canvas.instance);
+		var renderer = layer.options.renderer || this.options.renderer || this._renderer;
+
+		if (!renderer) {
+			renderer = this._renderer = (L.SVG && L.svg()) || (L.Canvas && L.canvas());
+		}
 
 		if (!this.hasLayer(renderer)) {
 			this.addLayer(renderer);
@@ -5317,7 +5343,7 @@ L.SVG = L.Renderer.extend({
 	},
 
 	_update: function () {
-		if (this._map._animatingZoom) { return; }
+		if (this._map._animatingZoom && this._bounds) { return; }
 
 		L.Renderer.prototype._update.call(this);
 
@@ -5449,7 +5475,7 @@ L.SVG = L.Renderer.extend({
 	},
 
 	_fireMouseEvent: function (e) {
-		this._paths[L.stamp(e.target)]._fireMouseEvent(e);
+		this._paths[L.stamp(e.target || e.srcElement)]._fireMouseEvent(e);
 	}
 });
 
@@ -5487,9 +5513,6 @@ L.svg = function (options) {
 	return L.Browser.svg || L.Browser.vml ? new L.SVG(options) : null;
 };
 
-// default instance to use when adding vectors to the map
-L.SVG.instance = L.svg();
-
 
 /*
  * Vector rendering for IE7-8 through VML.
@@ -5516,6 +5539,9 @@ L.SVG.include(!L.Browser.vml ? {} : {
 
 	_initContainer: function () {
 		this._container = L.DomUtil.create('div', 'leaflet-vml-container');
+
+		this._paths = {};
+		this._initEvents();
 	},
 
 	_update: function () {
@@ -5533,19 +5559,19 @@ L.SVG.include(!L.Browser.vml ? {} : {
 		layer._path = L.SVG.create('path');
 		container.appendChild(layer._path);
 
-		if (layer.options.clickable) {
-			this._initEvents(layer, container);
-		}
-
 		this._updateStyle(layer);
 	},
 
 	_addPath: function (layer) {
-		this._container.appendChild(layer._container);
+		var container = layer._container;
+		this._container.appendChild(container);
+		this._paths[L.stamp(container)] = layer;
 	},
 
 	_removePath: function (layer) {
-		L.DomUtil.remove(layer._container);
+		var container = layer._container;
+		L.DomUtil.remove(container);
+		delete this._paths[L.stamp(container)];
 	},
 
 	_updateStyle: function (layer) {
@@ -5622,8 +5648,6 @@ if (L.Browser.vml) {
 			};
 		}
 	})();
-
-	L.SVG.instance = L.svg();
 }
 
 
@@ -5653,7 +5677,7 @@ L.Canvas = L.Renderer.extend({
 	},
 
 	_update: function () {
-		if (this._map._animatingZoom) { return; }
+		if (this._map._animatingZoom && this._bounds) { return; }
 
 		L.Renderer.prototype._update.call(this);
 
@@ -5693,6 +5717,7 @@ L.Canvas = L.Renderer.extend({
 		this._redrawBounds = layer._pxBounds;
 		this._draw(true);
 		layer._project();
+		layer._update();
 		this._draw();
 		this._redrawBounds = null;
 	},
@@ -5869,8 +5894,6 @@ L.canvas = function (options) {
 	return L.Browser.canvas ? new L.Canvas(options) : null;
 };
 
-L.Canvas.instance = L.canvas();
-
 L.Polyline.prototype._containsPoint = function (p, closed) {
 	var i, j, k, len, len2, part,
 	    w = this._clickTolerance();
@@ -5916,7 +5939,7 @@ L.Polygon.prototype._containsPoint = function (p) {
 	return inside || L.Polyline.prototype._containsPoint.call(this, p, true);
 };
 
-L.Circle.prototype._containsPoint = function (p) {
+L.CircleMarker.prototype._containsPoint = function (p) {
 	return p.distanceTo(this._point) <= this._radius + this._clickTolerance();
 };
 
@@ -5993,27 +6016,23 @@ L.GeoJSON = L.FeatureGroup.extend({
 
 L.extend(L.GeoJSON, {
 	geometryToLayer: function (geojson, options) {
+
 		var geometry = geojson.type === 'Feature' ? geojson.geometry : geojson,
 		    coords = geometry.coordinates,
 		    layers = [],
-		    coordsToLatLng = options.coordsToLatLng || this.coordsToLatLng,
+		    pointToLayer = options && options.pointToLayer,
+		    coordsToLatLng = options && options.coordsToLatLng || this.coordsToLatLng,
 		    latlng, latlngs, i, len;
 
 		switch (geometry.type) {
 		case 'Point':
 			latlng = coordsToLatLng(coords);
-
-			return options.pointToLayer ?
-					options.pointToLayer(geojson, latlng) :
-					new L.Marker(latlng);
+			return pointToLayer ? pointToLayer(geojson, latlng) : new L.Marker(latlng);
 
 		case 'MultiPoint':
 			for (i = 0, len = coords.length; i < len; i++) {
 				latlng = coordsToLatLng(coords[i]);
-
-				layers.push(options.pointToLayer ?
-						options.pointToLayer(geojson, latlng) :
-						new L.Marker(latlng));
+				layers.push(pointToLayer ? pointToLayer(geojson, latlng) : new L.Marker(latlng));
 			}
 			return new L.FeatureGroup(layers);
 
@@ -6530,6 +6549,7 @@ L.Draggable = L.Evented.extend({
 		    offset = newPoint.subtract(this._startPoint);
 
 		if (!offset.x && !offset.y) { return; }
+		if (L.Browser.touch && Math.abs(offset.x) + Math.abs(offset.y) < 3) { return; }
 
 		L.DomEvent.preventDefault(e);
 
@@ -7154,7 +7174,11 @@ L.Map.TouchZoom = L.Handler.extend({
 	_updateOnMove: function () {
 		var map = this._map;
 
-		this._center = map.layerPointToLatLng(this._getTargetCenter());
+		if (map.options.touchZoom === 'center') {
+			this._center = map.getCenter();
+		} else {
+			this._center = map.layerPointToLatLng(this._getTargetCenter());
+		}
 		this._zoom = map.getScaleZoom(this._scale);
 
 		map._animateZoom(this._center, this._zoom);
@@ -7240,6 +7264,8 @@ L.Map.Tap = L.Handler.extend({
 				this._simulateEvent('contextmenu', first);
 			}
 		}, this), 1000);
+		
+		this._simulateEvent('mousedown', first);
 
 		L.DomEvent.on(document, {
 			touchmove: this._onMove,
@@ -7263,6 +7289,8 @@ L.Map.Tap = L.Handler.extend({
 			if (el && el.tagName && el.tagName.toLowerCase() === 'a') {
 				L.DomUtil.removeClass(el, 'leaflet-active');
 			}
+			
+			this._simulateEvent('mouseup', first);
 
 			// simulate click if the touch didn't move too much
 			if (this._isTapValid()) {
@@ -7535,6 +7563,8 @@ L.Map.Keyboard = L.Handler.extend({
 	},
 
 	_onKeyDown: function (e) {
+		if (e.altKey || e.ctrlKey || e.metaKey) { return; }
+
 		var key = e.keyCode,
 		    map = this._map;
 
@@ -8117,7 +8147,7 @@ L.Control.Layers = L.Control.extend({
 			if (!L.Browser.android) {
 				L.DomEvent.on(container, {
 					mouseover: this._expand,
-				    mouseout: this._collapse
+					mouseout: this._collapse
 				}, this);
 			}
 
@@ -8604,11 +8634,12 @@ L.Map.include(!zoomAnimated ? {} : {
 		// don't animate if the zoom origin isn't within one screen from the current center, unless forced
 		if (options.animate !== true && !this.getSize().contains(offset)) { return false; }
 
-		this
-		    .fire('movestart')
-		    .fire('zoomstart');
-
-		this._animateZoom(center, zoom, true);
+		L.Util.requestAnimFrame(function () {
+			this
+			    .fire('movestart')
+			    .fire('zoomstart')
+			    ._animateZoom(center, zoom, true);
+		}, this);
 
 		return true;
 	},
